@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Game Player</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: #0b0e14; color: #e6e6e6; font-family: system-ui, -apple-system, Arial, sans-serif; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .wrap { width: 100%; max-width: 640px; text-align: center; }
+  h1 { font-size: 2.2rem; margin: 0 0 20px; }
+  #lock input[type="text"] { width: 100%; max-width: 320px; padding: 12px 14px; font-size: 1.1rem; border-radius: 8px; border: 1px solid #444; background: #161b26; color: #fff; text-align: center; text-transform: uppercase; }
+  button { padding: 12px 28px; font-size: 1.1rem; border: 0; border-radius: 8px; background: #2f81f7; color: #fff; cursor: pointer; margin-top: 14px; }
+  button:hover { background: #1f6feb; }
+  #error { color: #ff7b72; min-height: 1.4em; margin-top: 12px; }
+  #player { display: none; }
+  #game { width: 100%; max-width: 640px; height: 780px; height: calc(min(100vw - 40px, 640px) * 0.9 + 210px); margin: 0 auto; background: #000; }
+  /* Touch controls sit BELOW the game picture, not on top of it.
+     A Game Boy picture is 160x144, so it is 90% as tall as the player is
+     wide, and EmulatorJS draws it at the top of this box (its canvas uses
+     object-fit: contain; object-position: top). The extra ~210px at the
+     bottom of this box is a clear control strip: EmulatorJS anchors its
+     virtual gamepad in the bottom ~180px of this box, above its menu bar,
+     so the D-pad (bottom-left) and A/B buttons (bottom-right) sit under
+     the picture instead of covering it. */
+  #game .ejs_canvas { object-position: top; }
+  #game .ejs_virtualGamepad_parent { bottom: 50px; }
+  #game .ejs_virtualGamepad_left { left: 10px; bottom: 50px; }
+  #game .ejs_virtualGamepad_right { right: 10px; bottom: 50px; }
+  #game .ejs_virtualGamepad_bottom { bottom: 10px; }
+  .shelf { margin-top: 18px; }
+  .shelf h2 { font-size: 1.2rem; margin: 0 0 6px; }
+.shelf button { display: block; width: 100%; max-width: 420px; margin: 8px auto 0; padding: 12px 16px; }
+ @media (max-width: 600px) {
+    h1 { font-size: 1.8rem; }
+    /* On a phone in portrait, stretch the player so the control strip lands
+       at the bottom of the viewport instead of halfway up the page. */
+    #game { height: calc((100vw - 40px) * 0.9 + 210px); height: max(calc((100vw - 40px) * 0.9 + 210px), calc(100dvh - 110px)); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="lock">
+    <h1>Game Player</h1>
+    <input type="text" id="code" placeholder="Enter access code" autocomplete="off" autocapitalize="characters">
+    <br>
+    <button id="unlockBtn" type="button">Unlock</button>
+    <p id="error" role="alert"></p>
+  </div>
+  <div id="player">
+    <h1>Game Player</h1>
+    <div id="game"></div>
+    <div class="shelf">
+      <h2>Games</h2>
+      <div id="gameList"></div>
+    </div>
+</div>
+  </div>
+<script>
+  var APPROVED_HASHES = [
+      "f37b5c9baf57630ffc2cfc3c9dfdfc98b487efb42eb881cd2d0eb7e325afc6ec"
+  ];
+  var GAMES_API_URL = "https://api.github.com/repos/Dreloader/game-player-3/contents/games";
+  async function sha256Hex(text) {
+    var data = new TextEncoder().encode(text);
+    var hash = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(hash)).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+  }
+  function startEmulator(gameUrl) {
+    var container = document.getElementById("game");
+    container.innerHTML = "";
+    var old = document.getElementById("ejs-loader");
+    if (old) old.remove();
+    window.EJS_player = "#game";
+    window.EJS_core = /\.gba$/i.test(gameUrl) ? "gba" : "gb";
+    window.EJS_gameUrl = gameUrl;
+    window.EJS_pathtodata = "https://cdn.emulatorjs.org/stable/data/";
+    // Touch controls (EmulatorJS "gb" defaults, set explicitly so the layout
+    // is pinned in this file): D-pad bottom-left, A/B bottom-right,
+    // Start/Select in the middle, plus Fast/Rewind/Slow. Where they sit on
+    // the page is set by the #game layout in the CSS above; these settings
+    // only fix which controls exist and which corner each one uses.
+    window.EJS_VirtualGamepadSettings = [
+      { type: "button", text: "A", id: "a", location: "right", left: 81, top: 40, bold: true, input_value: 8 },
+      { type: "button", text: "B", id: "b", location: "right", left: 10, top: 70, bold: true, input_value: 0 },
+      { type: "dpad", id: "dpad", location: "left", left: "50%", top: "50%", joystickInput: false, inputValues: [4, 5, 6, 7] },
+      { type: "button", text: "Start", id: "start", location: "center", left: 60, fontSize: 15, input_value: 3 },
+      { type: "button", text: "Select", id: "select", location: "center", left: -5, fontSize: 15, input_value: 2 },
+      { type: "button", text: "Fast", id: "speed_fast", location: "center", left: -35, top: 50, fontSize: 15, block: true, input_value: 27 },
+      { type: "button", text: "Rewind", id: "speed_rewind", location: "center", left: 30, top: 50, fontSize: 15, block: true, input_value: 28 },
+      { type: "button", text: "Slow", id: "speed_slow", location: "center", left: 95, top: 50, fontSize: 15, block: true, input_value: 29 }
+    ];
+    var script = document.createElement("script");
+    script.id = "ejs-loader";
+    script.src = "https://cdn.emulatorjs.org/stable/data/loader.js";
+    document.body.appendChild(script);
+  }
+  function addGameButton(name, gameUrl) {
+    var list = document.getElementById("gameList");
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = name;
+    button.addEventListener("click", function () { startEmulator(gameUrl); });
+    list.appendChild(button);
+  }
+  async function loadGameShelf() {
+    var list = document.getElementById("gameList");
+    list.innerHTML = "";
+    var firstGameUrl = null;
+    var gameCount = 0;
+    try {
+      var response = await fetch(GAMES_API_URL);
+      if (!response.ok) throw new Error("Could not load games.");
+      var files = await response.json();
+      if (!Array.isArray(files)) throw new Error("Could not load games.");
+      files.forEach(function (file) {
+        if (file && file.name && file.download_url && /\.(gb|gbc|gba)$/i.test(file.name)) {
+          if (!firstGameUrl) firstGameUrl = file.download_url;
+          addGameButton(file.name, file.download_url);
+          gameCount++;
+        }
+      });
+    } catch (e) {}
+      if (gameCount === 0) {
+      var message = document.createElement("p");
+      message.textContent = "No games added yet.";
+      list.appendChild(message);
+    }
+    return firstGameUrl;
+  }
+  document.getElementById("unlockBtn").addEventListener("click", async function () {
+    var input = document.getElementById("code");
+    var code = input.value.trim().toUpperCase();
+    var errorEl = document.getElementById("error");
+    if (!code) { errorEl.textContent = "Code not recognized."; return; }
+    var hash = await sha256Hex(code);
+    if (APPROVED_HASHES.indexOf(hash) !== -1) {
+      document.getElementById("lock").style.display = "none";
+      document.getElementById("player").style.display = "block";
+      var firstGameUrl = await loadGameShelf();
+      if (firstGameUrl) startEmulator(firstGameUrl);
+    } else {
+      errorEl.textContent = "Code not recognized.";
+    }
+  });
+  document.getElementById("code").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") document.getElementById("unlockBtn").click();
+  });
+</script> 
+</body>
+</html>
